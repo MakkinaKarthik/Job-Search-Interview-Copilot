@@ -1,4 +1,4 @@
-
+from pypdf import PdfReader
 import re
 import sqlite3
 from pathlib import Path
@@ -220,6 +220,39 @@ def delete_job(job_id):
 
 initialize_db()
 
+
+# ==================================================
+# PDF TEXT EXTRACTION
+# ==================================================
+
+def extract_pdf_text(uploaded_file):
+    """Extract readable text from an uploaded PDF."""
+    try:
+        from pypdf import PdfReader
+
+        reader = PdfReader(uploaded_file)
+
+        if reader.is_encrypted:
+            return None, "This PDF is encrypted or password-protected."
+
+        pages_text = []
+
+        for page in reader.pages:
+            text = page.extract_text() or ""
+            pages_text.append(text)
+
+        full_text = "\n".join(pages_text).strip()
+
+        if not full_text:
+            return None, (
+                "No readable text was found. "
+                "This PDF may contain scanned images."
+            )
+
+        return full_text, None
+
+    except Exception as error:
+        return None, f"Could not read this PDF: {error}"
 
 # ==================================================
 # 4. RESUME MATCHING
@@ -495,35 +528,62 @@ with add_tab:
 # 11. RESUME ANALYZER
 # ==================================================
 
+
 with resume_tab:
     st.subheader("Resume Analyzer")
     st.write(
-        "Compare your resume against a job description "
-        "to identify relevant skill keywords."
+        "Upload your resume and compare your skills "
+        "against a target job description."
     )
 
     st.info(
-        "This version uses keyword matching, not an AI model. "
-        "The score is not a hiring probability or an ATS score."
+        "This tool extracts text from PDFs and checks supported "
+        "skill keywords. It does not yet use an AI model."
     )
 
-    resume = st.text_area(
-        "Paste your resume text",
-        height=200,
-        placeholder="Your skills, projects, education, and experience...",
+    uploaded_resume = st.file_uploader(
+        "Upload your resume (PDF)",
+        type=["pdf"],
+        key="resume_pdf",
     )
+
+    resume_text = ""
+
+    if uploaded_resume is not None:
+        resume_text, pdf_error = extract_pdf_text(uploaded_resume)
+
+        if pdf_error:
+            st.error(pdf_error)
+            resume_text = ""
+        else:
+            st.success("Resume PDF read successfully.")
+
+            with st.expander("Preview extracted resume text"):
+                st.text(resume_text[:12000])
+
+    st.markdown("### Target job")
 
     description = st.text_area(
         "Paste the job description",
-        height=200,
-        placeholder="Required skills, responsibilities, qualifications...",
+        height=220,
+        placeholder=(
+            "Paste the responsibilities, required skills, "
+            "and qualifications from the job posting..."
+        ),
+        key="pdf_job_description",
     )
 
-    if st.button("Analyze resume", use_container_width=True):
-        if not resume.strip() or not description.strip():
-            st.warning("Please enter both text fields.")
+    if st.button(
+        "Analyze resume",
+        use_container_width=True,
+        key="analyze_pdf_resume",
+    ):
+        if not resume_text:
+            st.warning("Please upload a readable PDF resume.")
+        elif not description.strip():
+            st.warning("Please paste the target job description.")
         else:
-            resume_skills = set(extract_skills(resume))
+            resume_skills = set(extract_skills(resume_text))
             required_skills = set(extract_skills(description))
 
             matched = sorted(resume_skills & required_skills)
@@ -531,27 +591,33 @@ with resume_tab:
 
             if not required_skills:
                 st.warning(
-                    "No supported skills were found in the job description."
+                    "No supported skills were found in the job "
+                    "description. Check the text or expand the "
+                    "SKILLS list in app.py."
                 )
             else:
                 score = round(
                     100 * len(matched) / len(required_skills)
                 )
 
-                st.divider()
+                st.markdown("---")
                 st.subheader("Your analysis")
 
-                a, b, c = st.columns(3)
-                a.metric("Keyword overlap", f"{score}%")
-                b.metric("Matching skills", len(matched))
-                c.metric("Skills to review", len(missing))
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Keyword overlap", f"{score}%")
+                col2.metric("Matching skills", len(matched))
+                col3.metric("Skills to review", len(missing))
 
-                st.progress(score / 100)
+                st.progress(
+                    score / 100,
+                    text="Supported keyword overlap",
+                )
 
                 left, right = st.columns(2)
 
                 with left:
                     st.markdown("#### ✅ Matching skills")
+
                     if matched:
                         for skill in matched:
                             st.write(f"• {skill.title()}")
@@ -560,15 +626,33 @@ with resume_tab:
 
                 with right:
                     st.markdown("#### 📚 Skills to review")
+
                     if missing:
                         for skill in missing:
                             st.write(f"• {skill.title()}")
                     else:
                         st.write("No missing supported keywords.")
 
+                st.markdown("### Recommended next steps")
+
+                if missing:
+                    st.write(
+                        "Review these skills against the job's actual "
+                        "requirements. Learn relevant topics and add "
+                        "skills to your resume only when they reflect "
+                        "your genuine knowledge or experience."
+                    )
+                else:
+                    st.write(
+                        "Review the job requirements and ensure your "
+                        "resume includes specific examples of your "
+                        "relevant skills and projects."
+                    )
+
                 st.caption(
-                    "Only add a skill to your resume if you genuinely "
-                    "have that knowledge or experience."
+                    "This percentage measures keyword overlap only. "
+                    "It is not an ATS score, hiring probability, "
+                    "or assessment of your actual abilities."
                 )
 
 
