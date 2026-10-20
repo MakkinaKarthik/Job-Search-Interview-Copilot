@@ -1,24 +1,28 @@
-from pypdf import PdfReader
+
 import re
 import sqlite3
+from datetime import date, datetime
 from pathlib import Path
-from datetime import date
 
 import streamlit as st
+from pypdf import PdfReader
+from google import genai
 
 
-# ==================================================
+# =========================================================
 # 1. CONFIGURATION
-# ==================================================
+# =========================================================
 
-st.set_page_config(
-    page_title="CareerPilot | Job Search Copilot",
-    page_icon="🎯",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+BASE_DIR = Path(__file__).parent
+DB_PATH = BASE_DIR / "jobs.db"
 
-DB_PATH = Path(__file__).parent / "jobs.db"
+STATUSES = [
+    "Interested",
+    "Applied",
+    "Interview",
+    "Offer",
+    "Rejected",
+]
 
 SKILLS = [
     "python", "sql", "linux", "ubuntu", "git", "github",
@@ -28,182 +32,216 @@ SKILLS = [
     "communication", "problem solving",
 ]
 
-STATUSES = [
-    "Interested", "Applied", "Interview", "Offer", "Rejected"
-]
+st.set_page_config(
+    page_title="CareerPilot | Job Search Copilot",
+    page_icon="🎯",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
 
-# ==================================================
-# 2. PROFESSIONAL UI STYLING
-# ==================================================
+# =========================================================
+# 2. CUSTOM STYLING
+# =========================================================
 
-st.markdown("""
-<style>
-.stApp {
-    background-color: #f5f7fc;
-    color: #172033;
-}
-
-.block-container {
-    max-width: 1450px;
-    padding-top: 2rem;
-    padding-bottom: 3rem;
-}
-
-h1, h2, h3 {
-    color: #18213b;
-    letter-spacing: -0.5px;
-}
-
-h1 {
-    font-weight: 800;
-}
-
-[data-testid="stSidebar"] {
-    background: linear-gradient(180deg, #151b35, #28205b);
-}
-
-[data-testid="stSidebar"] * {
-    color: #f8fafc;
-}
-
-[data-testid="stMetric"] {
-    background: white;
-    border: 1px solid #e5e9f2;
-    border-radius: 16px;
-    padding: 20px;
-    box-shadow: 0 4px 18px rgba(30, 41, 59, 0.04);
-}
-
-[data-testid="stMetricLabel"] {
-    color: #64748b !important;
-    font-weight: 600;
-}
-
-[data-testid="stMetricValue"] {
-    color: #5145cd !important;
-    font-weight: 800;
-}
-
-[data-testid="stVerticalBlockBorderWrapper"] {
-    background: white;
-    border-color: #e5e9f2;
-    border-radius: 15px;
-}
-
-[data-testid="stForm"] {
-    background: white;
-    border: 1px solid #e5e9f2;
-    border-radius: 16px;
-    padding: 22px;
-}
-
-.stButton > button,
-.stFormSubmitButton > button {
-    background: #5546d7;
-    color: white;
-    border: none;
-    border-radius: 10px;
-    min-height: 42px;
-    font-weight: 650;
-    transition: 0.2s ease;
-}
-
-.stButton > button:hover,
-.stFormSubmitButton > button:hover {
-    background: #4334bd;
-    color: white;
-    border: none;
-}
-
-[data-testid="stTextInput"] input,
-[data-testid="stTextArea"] textarea {
-    border-radius: 10px;
-    border-color: #dce2ef;
-    background: white;
-}
-
-.stTabs [data-baseweb="tab-list"] {
-    gap: 10px;
-    border-bottom: 1px solid #e1e6f0;
-}
-
-.stTabs [data-baseweb="tab"] {
-    padding: 12px 14px;
-    font-weight: 600;
-}
-
-[data-testid="stAlert"] {
-    border-radius: 12px;
-}
-
-hr {
-    border-color: #e4e8f1;
-}
-
-@media (max-width: 768px) {
-    .block-container {
-        padding: 1rem;
+st.markdown(
+    """
+    <style>
+    .stApp {
+        background-color: #f7f8fc;
     }
 
-    h1 {
-        font-size: 1.8rem !important;
+    .block-container {
+        padding-top: 2rem;
+        padding-bottom: 3rem;
+        max-width: 1250px;
+    }
+
+    .hero {
+        background: linear-gradient(120deg, #172554, #334b91);
+        color: white;
+        padding: 32px;
+        border-radius: 18px;
+        margin-bottom: 25px;
+    }
+
+    .hero-label {
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: 2px;
+        color: #bfdbfe;
+        margin-bottom: 10px;
+    }
+
+    .hero h1 {
+        color: white;
+        font-size: clamp(28px, 4vw, 42px);
+        margin: 0 0 10px 0;
+    }
+
+    .hero p {
+        color: #e2e8f0;
+        font-size: 16px;
+        margin-bottom: 0;
     }
 
     [data-testid="stMetric"] {
-        padding: 12px;
+        background: white;
+        border: 1px solid #e5e7eb;
+        padding: 16px;
+        border-radius: 12px;
     }
-}
-</style>
-""", unsafe_allow_html=True)
+
+    div[data-testid="stForm"] {
+        background: white;
+        border-radius: 12px;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 
-# ==================================================
-# 3. DATABASE
-# ==================================================
+# =========================================================
+# 3. DATABASE FUNCTIONS
+# =========================================================
 
-def connect_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+def get_connection():
+    return sqlite3.connect(DB_PATH)
 
 
-def initialize_db():
-    with connect_db() as conn:
-        conn.execute("""
+def init_database():
+    with get_connection() as conn:
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS jobs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 company TEXT NOT NULL,
-                title TEXT NOT NULL,
-                link TEXT,
-                applied_date TEXT NOT NULL,
-                status TEXT NOT NULL,
-                notes TEXT DEFAULT ''
+                role TEXT NOT NULL,
+                job_url TEXT,
+                location TEXT,
+                status TEXT NOT NULL DEFAULT 'Interested',
+                applied_date TEXT,
+                notes TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
-        """)
+            """
+        )
+
+        # Migrate older databases if these columns are missing.
+        columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(jobs)").fetchall()
+        }
+
+        if "company" not in columns:
+            conn.execute(
+                "ALTER TABLE jobs ADD COLUMN company TEXT NOT NULL DEFAULT ''"
+            )
+
+        if "role" not in columns:
+            conn.execute(
+                "ALTER TABLE jobs ADD COLUMN role TEXT NOT NULL DEFAULT ''"
+            )
+
+        for column in [
+            "job_url", "location", "status", "applied_date", "notes",
+        ]:
+            if column not in columns:
+                conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} TEXT")
+
+        columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(jobs)").fetchall()
+        }
+
+        # Copy values from older schema column names when available.
+        if "title" in columns:
+            conn.execute(
+                """
+                UPDATE jobs SET role = title
+                WHERE (role IS NULL OR role = '') AND title IS NOT NULL
+                """
+            )
+
+        if "job_title" in columns:
+            conn.execute(
+                """
+                UPDATE jobs SET role = job_title
+                WHERE (role IS NULL OR role = '')
+                AND job_title IS NOT NULL
+                """
+            )
+
+        if "company_name" in columns:
+            conn.execute(
+                """
+                UPDATE jobs SET company = company_name
+                WHERE (company IS NULL OR company = '')
+                AND company_name IS NOT NULL
+                """
+            )
 
 
-def add_job(company, title, link, applied_date, status, notes):
-    with connect_db() as conn:
-        conn.execute("""
+def add_job(company, role, job_url, location, status, applied_date, notes):
+    with get_connection() as conn:
+        conn.execute(
+            """
             INSERT INTO jobs
-            (company, title, link, applied_date, status, notes)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (
-            company, title, link, str(applied_date), status, notes
-        ))
+            (company, role, job_url, location, status, applied_date, notes)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                company.strip(),
+                role.strip(),
+                job_url.strip(),
+                location.strip(),
+                status,
+                str(applied_date) if applied_date else "",
+                notes.strip(),
+            ),
+        )
 
 
 def get_jobs():
-    with connect_db() as conn:
-        return conn.execute("""
-            SELECT * FROM jobs
-            ORDER BY applied_date DESC, id DESC
-        """).fetchall()
+    with get_connection() as conn:
+        return conn.execute(
+            """
+            SELECT id, company, role, job_url, location,
+                   status, applied_date, notes
+            FROM jobs
+            ORDER BY id DESC
+            """
+        ).fetchall()
 
 
-def update_status(job_id, status):
-    with connect_db() as conn:
+def edit_job(
+    job_id, company, role, job_url, location,
+    status, applied_date, notes,
+):
+    with get_connection() as conn:
+        conn.execute(
+            """
+            UPDATE jobs
+            SET company = ?, role = ?, job_url = ?, location = ?,
+                status = ?, applied_date = ?, notes = ?
+            WHERE id = ?
+            """,
+            (
+                company.strip(),
+                role.strip(),
+                job_url.strip(),
+                location.strip(),
+                status,
+                str(applied_date) if applied_date else "",
+                notes.strip(),
+                job_id,
+            ),
+        )
+
+
+def update_job_status(job_id, status):
+    with get_connection() as conn:
         conn.execute(
             "UPDATE jobs SET status = ? WHERE id = ?",
             (status, job_id),
@@ -211,521 +249,650 @@ def update_status(job_id, status):
 
 
 def delete_job(job_id):
-    with connect_db() as conn:
-        conn.execute(
-            "DELETE FROM jobs WHERE id = ?",
-            (job_id,),
-        )
+    with get_connection() as conn:
+        conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
 
 
-initialize_db()
+init_database()
 
 
-# ==================================================
-# PDF TEXT EXTRACTION
-# ==================================================
+# =========================================================
+# 4. RESUME ANALYZER FUNCTIONS
+# =========================================================
 
 def extract_pdf_text(uploaded_file):
-    """Extract readable text from an uploaded PDF."""
     try:
-        from pypdf import PdfReader
-
         reader = PdfReader(uploaded_file)
+        return "\n".join(
+            page.extract_text() or ""
+            for page in reader.pages
+        )
+    except Exception as exc:
+        st.error(f"Could not read the PDF: {exc}")
+        return ""
 
-        if reader.is_encrypted:
-            return None, "This PDF is encrypted or password-protected."
-
-        pages_text = []
-
-        for page in reader.pages:
-            text = page.extract_text() or ""
-            pages_text.append(text)
-
-        full_text = "\n".join(pages_text).strip()
-
-        if not full_text:
-            return None, (
-                "No readable text was found. "
-                "This PDF may contain scanned images."
-            )
-
-        return full_text, None
-
-    except Exception as error:
-        return None, f"Could not read this PDF: {error}"
-
-# ==================================================
-# 4. RESUME MATCHING
-# ==================================================
 
 def extract_skills(text):
-    text = text.lower()
+    text_lower = text.lower()
     found = []
 
     for skill in SKILLS:
         pattern = r"(?<!\w)" + re.escape(skill) + r"(?!\w)"
-
-        if re.search(pattern, text):
+        if re.search(pattern, text_lower):
             found.append(skill)
 
-    return sorted(found)
+    return found
 
 
-# ==================================================
-# 5. INTERVIEW QUESTIONS
-# ==================================================
+# =========================================================
+# 5. GEMINI AI FUNCTION
+# =========================================================
 
-def generate_questions(role, skills, count):
-    questions = [
-        f"Explain your understanding of the {role} role.",
-        "Tell me about a technical problem you solved.",
-        "Describe a mistake you made and what you learned.",
-        "Why are you interested in this position?",
-        "Explain one project you have built.",
-        "How do you troubleshoot an unfamiliar problem?",
-        "How do you prioritize multiple tasks?",
-        "What would you like to learn in your first 90 days?",
-    ]
+def ask_gemini(prompt):
+    try:
+        api_key = st.secrets.get("GEMINI_API_KEY", "")
+    except Exception:
+        api_key = ""
 
-    for skill in skills:
-        questions.append(
-            f"Explain {skill} and give a practical example of its use."
+    if not api_key:
+        return (
+            "Gemini API key is not configured.\n\n"
+            "Create `.streamlit/secrets.toml` and add:\n\n"
+            'GEMINI_API_KEY = "your_api_key_here"\n\n'
+            "Restart the application after configuring it."
         )
 
-    return questions[:count]
+    try:
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+        )
+
+        return response.text or "The AI did not return any text."
+
+    except Exception as exc:
+        return (
+            "The AI request failed. Check your API key, model availability, "
+            f"network connection, and usage limits.\n\nDetails: {exc}"
+        )
 
 
-# ==================================================
+# =========================================================
 # 6. SIDEBAR
-# ==================================================
+# =========================================================
 
 with st.sidebar:
-    st.markdown("# CareerPilot")
-    st.caption("YOUR PERSONAL CAREER WORKSPACE")
+    st.markdown("## 🎯 CareerPilot")
+    st.caption("Your personal career workspace")
     st.divider()
 
-    st.markdown("### 🚀 Your career journey")
-    st.write(
-        "Keep your applications organized, discover skill gaps, "
-        "and prepare for interviews."
-    )
+    st.markdown("### Your workflow")
+    st.write("1. Track job applications")
+    st.write("2. Analyze your resume")
+    st.write("3. Practice interviews")
 
     st.divider()
-    st.markdown("### Quick overview")
-
-    sidebar_jobs = get_jobs()
-
-    st.write(f"📌 Saved jobs: {len(sidebar_jobs)}")
-    st.write(
-        "🎤 Interviews: "
-        f"{sum(j['status'] == 'Interview' for j in sidebar_jobs)}"
-    )
-    st.write(
-        "🏆 Offers: "
-        f"{sum(j['status'] == 'Offer' for j in sidebar_jobs)}"
-    )
-
-    st.divider()
-    st.caption("Built with Python and Streamlit")
+    st.caption("Built with Python, Streamlit and SQLite")
 
 
-# ==================================================
-# 7. HERO SECTION - NATIVE STREAMLIT
-# No HTML tags are used for the heading or description.
-# ==================================================
+# =========================================================
+# 7. HERO
+# =========================================================
 
-st.caption("YOUR PERSONAL CAREER WORKSPACE")
-st.title("Land your next opportunity.")
-st.write(
-    "Track applications, discover skill gaps, and prepare "
-    "for interviews, all in one place."
+st.markdown(
+    """
+    <div class="hero">
+        <div class="hero-label">YOUR PERSONAL CAREER WORKSPACE</div>
+        <h1>Land your next opportunity.</h1>
+        <p>
+            Track applications, discover skill gaps, and prepare for
+            interviews, all in one place.
+        </p>
+    </div>
+    """,
+    unsafe_allow_html=True,
 )
 
-st.divider()
+
+# =========================================================
+# 8. NAVIGATION TABS
+# =========================================================
+
+dashboard_tab, add_tab, resume_tab, interview_tab = st.tabs(
+    [
+        "📊 Dashboard",
+        "➕ Add Job",
+        "📄 Resume Analyzer",
+        "🤖 Interview Studio",
+    ]
+)
 
 
-# ==================================================
-# 8. NAVIGATION
-# ==================================================
-
-dashboard_tab, add_tab, resume_tab, interview_tab = st.tabs([
-    "📊 Dashboard",
-    "➕ Add Job",
-    "🧠 Resume Analyzer",
-    "🎤 Interview Studio",
-])
-
-
-# ==================================================
+# =========================================================
 # 9. DASHBOARD
-# ==================================================
+# =========================================================
 
 with dashboard_tab:
+    st.subheader("Your job search overview")
+
     jobs = get_jobs()
 
-    st.subheader("Your job search overview")
-    st.caption("A quick look at your career progress.")
+    total_jobs = len(jobs)
+    interested_count = sum(1 for job in jobs if job[5] == "Interested")
+    applied_count = sum(1 for job in jobs if job[5] == "Applied")
+    interview_count = sum(1 for job in jobs if job[5] == "Interview")
+    offer_count = sum(1 for job in jobs if job[5] == "Offer")
+    rejected_count = sum(1 for job in jobs if job[5] == "Rejected")
 
-    total = len(jobs)
-    applied = sum(j["status"] == "Applied" for j in jobs)
-    interviews = sum(j["status"] == "Interview" for j in jobs)
-    offers = sum(j["status"] == "Offer" for j in jobs)
+    metric1, metric2, metric3, metric4 = st.columns(4)
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Total opportunities", total)
-    c2.metric("Applications sent", applied)
-    c3.metric("Interviews", interviews)
-    c4.metric("Offers", offers)
+    metric1.metric("Total jobs", total_jobs)
+    metric2.metric("Applied", applied_count)
+    metric3.metric("Interviews", interview_count)
+    metric4.metric("Offers", offer_count)
 
-    st.write("")
-    st.subheader("Application progress")
-
-    if total:
-        processed = sum(
-            j["status"] in ["Applied", "Interview", "Offer", "Rejected"]
-            for j in jobs
-        )
-        progress = processed / total
-
-        st.progress(
-            progress,
-            text=f"{round(progress * 100)}% of saved jobs processed",
-        )
-    else:
-        st.info(
-            "Welcome! Add your first opportunity to start "
-            "building your job search dashboard."
+    with st.expander("View all status counts"):
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Interested", interested_count)
+        c2.metric("Rejected", rejected_count)
+        c3.metric(
+            "Interview rate",
+            f"{interview_count / total_jobs * 100:.1f}%"
+            if total_jobs else "0%",
         )
 
-    st.write("")
-    st.subheader("Your opportunities")
+    st.divider()
+    st.subheader("Manage applications")
 
-    if not jobs:
-        st.markdown(
-            "Start by adding a job in the **Add Job** tab."
-        )
-    else:
-        for job in jobs:
-            with st.container(border=True):
-                left, middle, right = st.columns([3, 2, 1])
-
-                with left:
-                    st.markdown(f"### {job['title']}")
-                    st.write(f"🏢 {job['company']}")
-                    st.caption(
-                        f"Application date: {job['applied_date']} "
-                        f"| Reference #{job['id']}"
-                    )
-
-                    if job["link"]:
-                        st.markdown(
-                            f"[View job posting]({job['link']})"
-                        )
-
-                    if job["notes"]:
-                        st.caption(job["notes"])
-
-                with middle:
-                    current = (
-                        STATUSES.index(job["status"])
-                        if job["status"] in STATUSES else 0
-                    )
-
-                    new_status = st.selectbox(
-                        "Application status",
-                        STATUSES,
-                        index=current,
-                        key=f"status_{job['id']}",
-                    )
-
-                    if new_status != job["status"]:
-                        update_status(job["id"], new_status)
-                        st.rerun()
-
-                with right:
-                    st.write("")
-                    if st.button(
-                        "Delete",
-                        key=f"delete_{job['id']}",
-                        use_container_width=True,
-                    ):
-                        delete_job(job["id"])
-                        st.rerun()
-
-
-# ==================================================
-# 10. ADD JOB
-# ==================================================
-
-with add_tab:
-    st.subheader("Add a new opportunity")
-    st.write(
-        "Save the important details now so you can track "
-        "the application later."
+    search_text = st.text_input(
+        "🔍 Search by company or job title",
+        placeholder="For example, Python Developer or Microsoft",
+        key="job_search",
     )
 
-    with st.form("add_job_form"):
-        company = st.text_input(
-            "Company name *",
-            placeholder="e.g. Microsoft",
+    status_filter = st.selectbox(
+        "Filter by application status",
+        ["All"] + STATUSES,
+        key="job_status_filter",
+    )
+
+    filtered_jobs = [
+        job for job in jobs
+        if (
+            search_text.strip().lower() in (job[1] or "").lower()
+            or search_text.strip().lower() in (job[2] or "").lower()
         )
-
-        title = st.text_input(
-            "Job title *",
-            placeholder="e.g. Associate DevOps Engineer",
+        and (
+            status_filter == "All" or job[5] == status_filter
         )
+    ]
 
-        link = st.text_input(
-            "Job posting URL",
-            placeholder="https://company.com/careers/job",
-        )
+    st.caption(
+        f"Showing {len(filtered_jobs)} of {total_jobs} job applications"
+    )
 
-        col1, col2 = st.columns(2)
-
-        with col1:
-            applied_date = st.date_input(
-                "Application date",
-                value=date.today(),
+    if not filtered_jobs:
+        if not jobs:
+            st.info(
+                "You haven't added any jobs yet. "
+                "Open the Add Job tab to record your first opportunity."
             )
+        else:
+            st.info("No jobs match your search or selected status.")
 
-        with col2:
-            status = st.selectbox(
-                "Current status",
-                STATUSES,
-            )
+    for job in filtered_jobs:
+        (
+            job_id, company, role, job_url, location,
+            status, applied_date, notes,
+        ) = job
 
+        with st.container(border=True):
+            left, middle, right = st.columns([3, 2, 1])
+
+            with left:
+                st.markdown(f"**{role or 'Untitled role'}**")
+                st.write(company or "Unknown company")
+
+                if location:
+                    st.caption(f"📍 {location}")
+
+                if applied_date:
+                    st.caption(f"Application date: {applied_date}")
+
+                if notes:
+                    st.caption(f"Notes: {notes}")
+
+            with middle:
+                st.caption("Application status")
+
+                new_status = st.selectbox(
+                    "Update status",
+                    STATUSES,
+                    index=(
+                        STATUSES.index(status)
+                        if status in STATUSES else 0
+                    ),
+                    key=f"status_{job_id}",
+                    label_visibility="collapsed",
+                )
+
+                if new_status != status:
+                    update_job_status(job_id, new_status)
+                    st.rerun()
+
+            with right:
+                if job_url and job_url.strip():
+                    clean_url = job_url.strip()
+
+                    if clean_url.startswith(("https://", "http://")):
+                        st.link_button(
+                            "🔗 Open Job",
+                            clean_url,
+                            use_container_width=True,
+                        )
+                    else:
+                        st.warning("Invalid job URL")
+                else:
+                    st.caption("No job link added")
+
+                if st.button(
+                    "🗑️ Delete",
+                    key=f"delete_{job_id}",
+                    use_container_width=True,
+                ):
+                    st.session_state[f"confirm_delete_{job_id}"] = True
+
+            # Ask for confirmation before deleting a record.
+            if st.session_state.get(f"confirm_delete_{job_id}", False):
+                st.warning(
+                    f"Delete the application for {company}, {role}? "
+                    "This cannot be undone."
+                )
+
+                confirm_col, cancel_col = st.columns(2)
+
+                with confirm_col:
+                    if st.button(
+                        "Confirm delete",
+                        key=f"confirm_{job_id}",
+                        type="primary",
+                    ):
+                        delete_job(job_id)
+                        st.session_state.pop(
+                            f"confirm_delete_{job_id}", None
+                        )
+                        st.rerun()
+
+                with cancel_col:
+                    if st.button(
+                        "Cancel",
+                        key=f"cancel_{job_id}",
+                    ):
+                        st.session_state.pop(
+                            f"confirm_delete_{job_id}", None
+                        )
+                        st.rerun()
+
+            # Edit existing application details.
+            with st.expander("✏️ Edit job details"):
+                try:
+                    parsed_date = (
+                        date.fromisoformat(applied_date)
+                        if applied_date else date.today()
+                    )
+                except ValueError:
+                    parsed_date = date.today()
+
+                with st.form(f"edit_job_form_{job_id}"):
+                    edit_company = st.text_input(
+                        "Company name",
+                        value=company or "",
+                        key=f"edit_company_{job_id}",
+                    )
+
+                    edit_role = st.text_input(
+                        "Job title / role",
+                        value=role or "",
+                        key=f"edit_role_{job_id}",
+                    )
+
+                    edit_url = st.text_input(
+                        "Job posting URL",
+                        value=job_url or "",
+                        key=f"edit_url_{job_id}",
+                    )
+
+                    edit_location = st.text_input(
+                        "Location",
+                        value=location or "",
+                        key=f"edit_location_{job_id}",
+                    )
+
+                    edit_status = st.selectbox(
+                        "Application status",
+                        STATUSES,
+                        index=(
+                            STATUSES.index(status)
+                            if status in STATUSES else 0
+                        ),
+                        key=f"edit_status_{job_id}",
+                    )
+
+                    edit_date = st.date_input(
+                        "Application date",
+                        value=parsed_date,
+                        key=f"edit_date_{job_id}",
+                    )
+
+                    edit_notes = st.text_area(
+                        "Notes",
+                        value=notes or "",
+                        key=f"edit_notes_{job_id}",
+                    )
+
+                    save_edit = st.form_submit_button(
+                        "Save changes",
+                        use_container_width=True,
+                    )
+
+                    if save_edit:
+                        if not edit_company.strip() or not edit_role.strip():
+                            st.error(
+                                "Company name and job title are required."
+                            )
+                        elif edit_url.strip() and not edit_url.strip().startswith(
+                            ("https://", "http://")
+                        ):
+                            st.error(
+                                "Enter a valid job URL beginning with "
+                                "http:// or https://, or leave it blank."
+                            )
+                        else:
+                            edit_job(
+                                job_id,
+                                edit_company,
+                                edit_role,
+                                edit_url,
+                                edit_location,
+                                edit_status,
+                                edit_date,
+                                edit_notes,
+                            )
+                            st.success("Job application updated.")
+                            st.rerun()
+
+
+# =========================================================
+# 10. ADD JOB
+# =========================================================
+
+with add_tab:
+    st.subheader("Add a job opportunity")
+    st.write("Keep your job search organized in one place.")
+
+    with st.form("add_job_form", clear_on_submit=True):
+        company = st.text_input("Company name *")
+        role = st.text_input("Job title / role *")
+        job_url = st.text_input("Job posting URL")
+        location = st.text_input("Location")
+        status = st.selectbox("Application status", STATUSES)
+        applied_date = st.date_input(
+            "Application date",
+            value=date.today(),
+        )
         notes = st.text_area(
             "Notes",
-            placeholder="Skills to revise, recruiter details, follow-up...",
+            placeholder=(
+                "Recruiter details, skills required, "
+                "follow-up reminders..."
+            ),
         )
 
         submitted = st.form_submit_button(
-            "Save application",
+            "Save job application",
             use_container_width=True,
         )
 
         if submitted:
-            if not company.strip() or not title.strip():
-                st.error("Company name and job title are required.")
-
-            elif link and not link.startswith(("https://", "http://")):
-                st.error("Enter a valid URL beginning with http:// or https://.")
-
+            if not company.strip() or not role.strip():
+                st.error(
+                    "Please enter both the company name and job title."
+                )
+            elif job_url.strip() and not job_url.strip().startswith(
+                ("https://", "http://")
+            ):
+                st.error(
+                    "Enter a valid job URL beginning with http:// "
+                    "or https://, or leave it blank."
+                )
             else:
                 add_job(
-                    company.strip(),
-                    title.strip(),
-                    link.strip(),
-                    applied_date,
+                    company,
+                    role,
+                    job_url,
+                    location,
                     status,
-                    notes.strip(),
+                    applied_date,
+                    notes,
                 )
-                st.success("Application saved successfully!")
+                st.success("Job application saved successfully.")
                 st.rerun()
 
 
-# ==================================================
+# =========================================================
 # 11. RESUME ANALYZER
-# ==================================================
-
+# =========================================================
 
 with resume_tab:
     st.subheader("Resume Analyzer")
     st.write(
-        "Upload your resume and compare your skills "
-        "against a target job description."
-    )
-
-    st.info(
-        "This tool extracts text from PDFs and checks supported "
-        "skill keywords. It does not yet use an AI model."
+        "Upload your resume and compare your skills with a job description."
     )
 
     uploaded_resume = st.file_uploader(
-        "Upload your resume (PDF)",
+        "Upload your resume in PDF format",
         type=["pdf"],
-        key="resume_pdf",
+        key="resume_upload",
     )
 
-    resume_text = ""
-
-    if uploaded_resume is not None:
-        resume_text, pdf_error = extract_pdf_text(uploaded_resume)
-
-        if pdf_error:
-            st.error(pdf_error)
-            resume_text = ""
-        else:
-            st.success("Resume PDF read successfully.")
-
-            with st.expander("Preview extracted resume text"):
-                st.text(resume_text[:12000])
-
-    st.markdown("### Target job")
-
-    description = st.text_area(
+    job_description = st.text_area(
         "Paste the job description",
         height=220,
-        placeholder=(
-            "Paste the responsibilities, required skills, "
-            "and qualifications from the job posting..."
-        ),
-        key="pdf_job_description",
+        placeholder="Paste the complete job description here...",
     )
 
-    if st.button(
-        "Analyze resume",
-        use_container_width=True,
-        key="analyze_pdf_resume",
-    ):
-        if not resume_text:
-            st.warning("Please upload a readable PDF resume.")
-        elif not description.strip():
-            st.warning("Please paste the target job description.")
+    if st.button("Analyze resume", key="analyze_resume"):
+        if uploaded_resume is None:
+            st.warning("Please upload a PDF resume first.")
+        elif not job_description.strip():
+            st.warning("Please paste a job description first.")
         else:
-            resume_skills = set(extract_skills(resume_text))
-            required_skills = set(extract_skills(description))
+            resume_text = extract_pdf_text(uploaded_resume)
 
-            matched = sorted(resume_skills & required_skills)
-            missing = sorted(required_skills - resume_skills)
-
-            if not required_skills:
-                st.warning(
-                    "No supported skills were found in the job "
-                    "description. Check the text or expand the "
-                    "SKILLS list in app.py."
+            if not resume_text.strip():
+                st.error(
+                    "No readable text was found. "
+                    "If this is a scanned PDF, you may need OCR."
                 )
             else:
-                score = round(
-                    100 * len(matched) / len(required_skills)
-                )
+                resume_skills = set(extract_skills(resume_text))
+                required_skills = set(extract_skills(job_description))
 
-                st.markdown("---")
-                st.subheader("Your analysis")
+                matched = sorted(resume_skills & required_skills)
+                missing = sorted(required_skills - resume_skills)
+
+                st.markdown("### Analysis results")
 
                 col1, col2, col3 = st.columns(3)
-                col1.metric("Keyword overlap", f"{score}%")
-                col2.metric("Matching skills", len(matched))
-                col3.metric("Skills to review", len(missing))
+                col1.metric("Skills in resume", len(resume_skills))
+                col2.metric("Matched skills", len(matched))
+                col3.metric("Potential skill gaps", len(missing))
 
-                st.progress(
-                    score / 100,
-                    text="Supported keyword overlap",
-                )
-
-                left, right = st.columns(2)
-
-                with left:
+                if matched:
                     st.markdown("#### ✅ Matching skills")
-
-                    if matched:
-                        for skill in matched:
-                            st.write(f"• {skill.title()}")
-                    else:
-                        st.write("No matching keywords found.")
-
-                with right:
-                    st.markdown("#### 📚 Skills to review")
-
-                    if missing:
-                        for skill in missing:
-                            st.write(f"• {skill.title()}")
-                    else:
-                        st.write("No missing supported keywords.")
-
-                st.markdown("### Recommended next steps")
+                    st.write(", ".join(matched))
 
                 if missing:
-                    st.write(
-                        "Review these skills against the job's actual "
-                        "requirements. Learn relevant topics and add "
-                        "skills to your resume only when they reflect "
-                        "your genuine knowledge or experience."
-                    )
+                    st.markdown("#### 📚 Skills to work on")
+                    st.write(", ".join(missing))
                 else:
-                    st.write(
-                        "Review the job requirements and ensure your "
-                        "resume includes specific examples of your "
-                        "relevant skills and projects."
+                    st.success(
+                        "All detected skills from the job description "
+                        "also appear in your resume."
                     )
 
-                st.caption(
-                    "This percentage measures keyword overlap only. "
-                    "It is not an ATS score, hiring probability, "
-                    "or assessment of your actual abilities."
-                )
+                with st.expander("View extracted resume text"):
+                    st.text(resume_text[:12000])
+
+                if st.button("Get AI resume feedback"):
+                    prompt = f"""
+                    Act as a practical resume reviewer for an entry-level
+                    candidate.
+
+                    Compare the resume with the job description.
+                    Give honest, specific feedback in these sections:
+                    1. Strong matches
+                    2. Missing skills
+                    3. Resume improvements
+                    4. Suggested projects or learning priorities
+                    5. Three concrete next steps
+
+                    Do not invent qualifications or experience.
+
+                    RESUME:
+                    {resume_text[:12000]}
+
+                    JOB DESCRIPTION:
+                    {job_description[:10000]}
+                    """
+
+                    with st.spinner("Reviewing your resume..."):
+                        feedback = ask_gemini(prompt)
+
+                    st.markdown("### AI feedback")
+                    st.markdown(feedback)
 
 
-# ==================================================
+# =========================================================
 # 12. INTERVIEW STUDIO
-# ==================================================
+# =========================================================
 
 with interview_tab:
-    st.subheader("Interview Studio")
+    st.subheader("AI Interview Studio")
     st.write(
-        "Create a practice session for your target role."
+        "Generate practice questions and receive feedback on your answers."
     )
 
-    role = st.text_input(
+    target_role = st.text_input(
         "Target job role",
-        value="Associate DevOps Engineer",
+        placeholder="For example, Associate DevOps Engineer",
     )
 
-    chosen_skills = st.multiselect(
-        "Topics to practice",
-        SKILLS,
-        default=[
-            "linux", "git", "docker", "kubernetes", "jenkins"
+    experience_level = st.selectbox(
+        "Experience level",
+        ["Fresher", "Entry-level", "Intermediate"],
+    )
+
+    interview_type = st.selectbox(
+        "Interview type",
+        [
+            "Technical",
+            "HR",
+            "Scenario-based",
+            "Mixed",
         ],
     )
 
-    count = st.slider(
-        "Number of questions",
-        min_value=5,
-        max_value=15,
-        value=10,
-    )
-
     if st.button(
-        "Generate questions",
+        "Generate interview questions",
         use_container_width=True,
     ):
-        if not role.strip():
-            st.warning("Please enter a target role.")
+        if not target_role.strip():
+            st.warning("Please enter a target job role.")
         else:
-            questions = generate_questions(
-                role.strip(),
-                chosen_skills,
-                count,
-            )
+            prompt = f"""
+            Act as an experienced interviewer.
 
-            st.divider()
-            st.subheader("Your practice session")
+            Create 10 interview practice questions for:
+            Role: {target_role}
+            Experience level: {experience_level}
+            Interview type: {interview_type}
 
-            for i, question in enumerate(questions, start=1):
-                with st.container(border=True):
-                    st.markdown(f"**Question {i}**")
-                    st.write(question)
+            Include a balanced set appropriate for the selected type.
+            Number the questions clearly.
+            For technical or scenario-based interviews, include practical
+            troubleshooting questions where relevant.
+            Do not provide answers yet.
+            """
 
-                    st.text_area(
-                        "Write your practice answer",
-                        key=f"answer_{i}_{role.strip()}",
-                        placeholder="Write your answer here...",
-                        height=100,
-                    )
+            with st.spinner("Generating interview questions..."):
+                questions = ask_gemini(prompt)
 
-            st.info(
-                "Practice explaining your answer aloud and use "
-                "real examples from your own projects."
-            )
+            st.session_state["interview_questions"] = questions
+
+    if st.session_state.get("interview_questions"):
+        st.markdown("### Practice questions")
+        st.markdown(st.session_state["interview_questions"])
+
+        st.divider()
+        st.markdown("### Practice your answer")
+
+        question_to_practice = st.text_area(
+            "Paste one question",
+            placeholder="Select a question from the list above...",
+        )
+
+        practice_answer = st.text_area(
+            "Your answer",
+            height=200,
+            placeholder="Write your answer as if you were in an interview...",
+        )
+
+        if st.button("Review my answer"):
+            if not question_to_practice.strip() or not practice_answer.strip():
+                st.warning(
+                    "Enter both the interview question and your answer."
+                )
+            else:
+                prompt = f"""
+                Act as a supportive but honest interview coach.
+
+                Job role: {target_role}
+                Experience level: {experience_level}
+
+                Interview question:
+                {question_to_practice}
+
+                Candidate answer:
+                {practice_answer}
+
+                Evaluate the answer in these sections:
+                1. What was good
+                2. What needs improvement
+                3. Technical or factual gaps
+                4. A stronger sample answer appropriate for the candidate's
+                   experience level
+                5. One practical tip for the next attempt
+
+                Do not claim that the candidate has experience they did
+                not mention. Keep the feedback specific and constructive.
+                """
+
+                with st.spinner("Reviewing your answer..."):
+                    feedback = ask_gemini(prompt)
+
+                st.markdown("### Interview feedback")
+                st.markdown(feedback)
 
 
-# ==================================================
+# =========================================================
 # 13. FOOTER
-# ==================================================
+# =========================================================
 
 st.divider()
 
 st.caption(
-    "CareerPilot · Organize your search. Practice with purpose."
+    "CareerPilot | Job Search and Interview Copilot | "
+    "Built with Python, Streamlit, SQLite and Gemini"
 )

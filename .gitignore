@@ -1,7 +1,7 @@
+.streamlit/secrets.toml
 venv/
 __pycache__/
-*.py[cod]
+*.pyc
 jobs.db
-.streamlit/secrets.toml
-.env
-.pytest_cache/
+jobs_backup*.db
+app_backup.py
